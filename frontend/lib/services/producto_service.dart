@@ -1,14 +1,22 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import '../config/api_config.dart';
 import '../models/producto.dart';
 import '../models/dashboard_stats.dart';
+import 'session_storage_service.dart';
 
-/// Servicio responsable de todas las operaciones HTTP con la API REST utilizando Dio
+/// Servicio responsable de las operaciones CRUD y consultas protegidas con la API REST utilizando Dio
 class ProductoService {
   final Dio _dio;
+  final SessionStorageService _sessionStorage;
+  final VoidCallback? onUnauthorized;
 
-  ProductoService({Dio? dio})
-      : _dio = dio ??
+  ProductoService({
+    Dio? dio,
+    SessionStorageService? sessionStorage,
+    this.onUnauthorized,
+  })  : _sessionStorage = sessionStorage ?? SessionStorageService(),
+        _dio = dio ??
             Dio(
               BaseOptions(
                 connectTimeout: const Duration(seconds: 10),
@@ -18,9 +26,30 @@ class ProductoService {
                   'Accept': 'application/json',
                 },
               ),
-            );
+            ) {
+    // Configuración de interceptores de Dio para inyectar automáticamente el Bearer token
+    // y capturar respuestas 401 de sesión expirada
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) async {
+          final token = await _sessionStorage.getToken();
+          if (token != null && token.isNotEmpty) {
+            options.headers['Authorization'] = 'Bearer $token';
+          }
+          return handler.next(options);
+        },
+        onError: (DioException err, handler) {
+          if (err.response?.statusCode == 401) {
+            debugPrint('[DIO] 401 Unauthorized recibido: Notificando expiración de sesión.');
+            onUnauthorized?.call();
+          }
+          return handler.next(err);
+        },
+      ),
+    );
+  }
 
-  /// Obtiene la lista completa de productos desde GET /api/productos
+  /// Obtiene la lista completa de productos desde GET /api/productos (Protegido con JWT)
   Future<List<Producto>> getProductos({String? query, String? categoria}) async {
     try {
       final Map<String, dynamic> queryParams = {};
@@ -49,7 +78,7 @@ class ProductoService {
     }
   }
 
-  /// Consulta el detalle de un producto específico mediante GET /api/productos/{id}
+  /// Consulta el detalle de un producto específico mediante GET /api/productos/{id} (Protegido con JWT)
   Future<Producto> getProductoById(int id) async {
     try {
       final response = await _dio.get(ApiConfig.productoById(id));
@@ -66,7 +95,7 @@ class ProductoService {
     }
   }
 
-  /// Registra un nuevo producto mediante POST /api/productos
+  /// Registra un nuevo producto mediante POST /api/productos (Protegido con JWT)
   Future<Producto> createProducto(Producto producto) async {
     try {
       final response = await _dio.post(
@@ -86,7 +115,7 @@ class ProductoService {
     }
   }
 
-  /// Actualiza un producto existente mediante PUT /api/productos/{id}
+  /// Actualiza un producto existente mediante PUT /api/productos/{id} (Protegido con JWT)
   Future<Producto> updateProducto(int id, Producto producto) async {
     try {
       final response = await _dio.put(
@@ -106,7 +135,7 @@ class ProductoService {
     }
   }
 
-  /// Elimina un producto de la base de datos mediante DELETE /api/productos/{id}
+  /// Elimina un producto de la base de datos mediante DELETE /api/productos/{id} (Protegido con JWT)
   Future<bool> deleteProducto(int id) async {
     try {
       final response = await _dio.delete(ApiConfig.productoById(id));
@@ -119,7 +148,7 @@ class ProductoService {
     }
   }
 
-  /// Obtiene las estadísticas consolidadas del Dashboard desde GET /api/dashboard
+  /// Obtiene las estadísticas consolidadas del Dashboard desde GET /api/dashboard (Protegido con JWT)
   Future<DashboardStats> getDashboardStats() async {
     try {
       final response = await _dio.get(ApiConfig.dashboard);
@@ -136,7 +165,7 @@ class ProductoService {
     }
   }
 
-  /// Traduce las excepciones de Dio a mensajes claros y en español para el usuario
+  /// Traduce las excepciones de Dio a mensajes claros en español
   String _handleDioError(DioException e, String accion) {
     if (e.type == DioExceptionType.connectionTimeout ||
         e.type == DioExceptionType.sendTimeout ||
@@ -157,7 +186,6 @@ class ProductoService {
         if (data['detail'] is String) {
           serverDetail = data['detail'];
         } else if (data['detail'] is List) {
-          // Errores de validación Pydantic
           final list = data['detail'] as List;
           serverDetail = list.map((item) => item['msg'] ?? item.toString()).join(', ');
         }
@@ -169,7 +197,11 @@ class ProductoService {
 
       switch (status) {
         case 400:
-          return 'Petición inválida: Verifique que el código del producto sea único y los datos sean correctos.';
+          return 'Petición inválida: Verifique que el código sea único y los datos correctos.';
+        case 401:
+          return 'Acceso no autorizado (401): Su sesión no es válida o ha expirado. Por favor inicie sesión nuevamente.';
+        case 403:
+          return 'Acceso denegado (403): No tiene permisos suficientes para realizar esta acción.';
         case 404:
           return 'El recurso solicitado no fue encontrado en el servidor.';
         case 422:

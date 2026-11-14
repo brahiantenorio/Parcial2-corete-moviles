@@ -39,6 +39,8 @@ dependencies:
   flutter_dotenv: ^6.0.1
   intl: ^0.20.3
   provider: ^6.1.5+1
+  shared_preferences: ^2.2.3
+  flutter_secure_storage: ^9.2.2
 
 dev_dependencies:
   flutter_test:
@@ -50,6 +52,10 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+
+dependency_overrides:
+  shared_preferences_foundation: 2.4.0
+  path_provider_foundation: 2.4.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

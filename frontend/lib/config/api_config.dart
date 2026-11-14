@@ -20,7 +20,12 @@ class ApiConfig {
     return url;
   }
 
-  // Endpoints específicos
+  // Endpoints de Autenticación
+  static String get login => '$baseUrl/auth/login';
+  static String get authMe => '$baseUrl/auth/me';
+  static String get authVerify => '$baseUrl/auth/verify';
+
+  // Endpoints del Inventario (Protegidos con JWT)
   static String get productos => '$baseUrl/productos';
   static String productoById(int id) => '$baseUrl/productos/$id';
   static String get dashboard => '$baseUrl/dashboard';

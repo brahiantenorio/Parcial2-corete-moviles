@@ -1,8 +1,20 @@
 import sqlite3
 import os
-from typing import Generator
+import hashlib
+import secrets
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "inventario.db")
+
+def _hash_seed_password(password: str) -> str:
+    """Función auxiliar para generar hash de contraseñas de semilla sin dependencias circulares."""
+    salt = secrets.token_hex(16)
+    pwd_hash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations=100000
+    ).hex()
+    return f"{salt}${pwd_hash}"
 
 def get_db_connection() -> sqlite3.Connection:
     """Crea y retorna una conexión a la base de datos SQLite."""
@@ -11,11 +23,11 @@ def get_db_connection() -> sqlite3.Connection:
     return conn
 
 def init_db() -> None:
-    """Inicializa la base de datos creando la tabla productos y sembrando datos iniciales."""
+    """Inicializa la base de datos creando las tablas de productos y usuarios y sembrando datos iniciales."""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Crear tabla de productos
+    # 1. Crear tabla de productos
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS productos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,7 +39,56 @@ def init_db() -> None:
             categoria TEXT NOT NULL
         )
     """)
+
+    # 2. Crear tabla de usuarios para autenticación JWT
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            rol TEXT DEFAULT 'admin',
+            activo INTEGER DEFAULT 1
+        )
+    """)
     conn.commit()
+
+    # Verificar y sembrar usuarios iniciales
+    cursor.execute("SELECT COUNT(*) AS total FROM usuarios")
+    total_usuarios = cursor.fetchone()["total"]
+    if total_usuarios == 0:
+        print("[DATABASE] Base de datos: Sembrando usuarios de prueba para autenticación...")
+        usuarios_iniciales = [
+            (
+                "Brahian Andres Tenorio",
+                "brahian.tenorio@uceva.edu.co",
+                _hash_seed_password("admin123"),
+                "admin",
+                1
+            ),
+            (
+                "Docente Evaluador",
+                "profesor@uceva.edu.co",
+                _hash_seed_password("profe2026"),
+                "docente",
+                1
+            ),
+            (
+                "Usuario de Prueba",
+                "usuario@test.com",
+                _hash_seed_password("123456"),
+                "usuario",
+                1
+            ),
+        ]
+        cursor.executemany("""
+            INSERT INTO usuarios (nombre, email, password_hash, rol, activo)
+            VALUES (?, ?, ?, ?, ?)
+        """, usuarios_iniciales)
+        conn.commit()
+        print(f"[DATABASE] {len(usuarios_iniciales)} usuarios creados exitosamente.")
+    else:
+        print(f"[DATABASE] Tabla usuarios lista: {total_usuarios} usuarios registrados.")
 
     # Verificar si ya existen productos
     cursor.execute("SELECT COUNT(*) AS total FROM productos")

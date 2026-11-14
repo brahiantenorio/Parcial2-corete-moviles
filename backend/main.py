@@ -1,28 +1,38 @@
-from fastapi import FastAPI, HTTPException, status, Query
+from fastapi import FastAPI, HTTPException, status, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import List, Optional
 import sqlite3
 
 from database import get_db_connection, init_db
+from auth import (
+    get_current_user,
+    verify_password,
+    create_access_token,
+    ACCESS_TOKEN_EXPIRE_HOURS,
+)
 from models import (
     ProductoCreate,
     ProductoUpdate,
     ProductoResponse,
     DashboardStats,
     MensajeResponse,
+    LoginRequest,
+    UserResponse,
+    TokenResponse,
+    SessionStatusResponse,
 )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Inicializar la base de datos al arrancar
+    # Inicializar la base de datos al arrancar (tablas de productos y usuarios)
     init_db()
     yield
 
 app = FastAPI(
-    title="API REST de Gestión de Inventario",
-    description="Backend oficial con persistencia SQLite para el Parcial 2 - Electiva Profesional I (Desarrollo Móvil)",
-    version="1.0.0",
+    title="API REST de Gestión de Inventario con Autenticación JWT",
+    description="Backend oficial con persistencia SQLite y protección JWT para Electiva Profesional I (Desarrollo Móvil)",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -35,34 +45,152 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================================================
+# Rutas Públicas y Documentación
+# ============================================================================
+
 @app.get("/", tags=["General"])
 def read_root():
     """Ruta raíz de bienvenida e información de la API."""
     return {
-        "sistema": "API REST - Sistema de Gestión de Inventario",
+        "sistema": "API REST - Sistema de Gestión de Inventario con JWT",
         "asignatura": "Electiva Profesional I - Desarrollo Móvil",
-        "evaluacion": "Segundo Parcial Práctico",
+        "evaluacion": "Taller: Autenticación JWT y Protección de Servicios",
         "estudiante": "Brahian Andres Tenorio",
-        "estado": "Activo y Persistente (SQLite)",
+        "estado": "Activo y Protegido (JWT + SQLite)",
         "documentacion_swagger": "/docs",
         "documentacion_redoc": "/redoc",
-        "endpoints_principales": {
+        "usuarios_de_prueba": [
+            {
+                "email": "brahian.tenorio@uceva.edu.co",
+                "password": "admin123",
+                "rol": "admin"
+            },
+            {
+                "email": "profesor@uceva.edu.co",
+                "password": "profe2026",
+                "rol": "docente"
+            },
+            {
+                "email": "usuario@test.com",
+                "password": "123456",
+                "rol": "usuario"
+            }
+        ],
+        "endpoints_autenticacion": {
+            "login": "POST /api/auth/login",
+            "perfil_actual": "GET /api/auth/me (Protegido)",
+            "verificar_token": "GET /api/auth/verify (Protegido)"
+        },
+        "endpoints_protegidos": {
+            "dashboard": "GET /api/dashboard",
             "listar_productos": "GET /api/productos",
             "detalle_producto": "GET /api/productos/{id}",
             "crear_producto": "POST /api/productos",
             "actualizar_producto": "PUT /api/productos/{id}",
-            "eliminar_producto": "DELETE /api/productos/{id}",
-            "estadisticas_dashboard": "GET /api/dashboard"
+            "eliminar_producto": "DELETE /api/productos/{id}"
         }
     }
 
-@app.get("/api/dashboard", response_model=DashboardStats, tags=["Dashboard"])
-def get_dashboard_stats():
+# ============================================================================
+# Endpoints de Autenticación JWT
+# ============================================================================
+
+@app.post("/api/auth/login", response_model=TokenResponse, tags=["Autenticación"])
+def login(credentials: LoginRequest):
     """
-    Retorna métricas consolidadas en tiempo real para las tarjetas del Dashboard:
-    - total_productos: Conteo total de productos registrados
-    - total_unidades: Suma total de unidades en stock
-    - valor_total_inventario: Suma de (precio * cantidad) de cada producto
+    Endpoint de inicio de sesión:
+    - Valida las credenciales (correo electrónico y contraseña) contra la base de datos SQLite.
+    - Si son correctas, genera y retorna un token JWT firmado con algoritmo HS256.
+    - Si son incorrectas, rechaza la petición con código HTTP 401 Unauthorized y mensaje explicativo.
+    """
+    email_clean = credentials.email.strip().lower()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, nombre, email, password_hash, rol, activo FROM usuarios WHERE LOWER(email) = ?",
+        (email_clean,)
+    )
+    user_row = cursor.fetchone()
+    conn.close()
+
+    if not user_row or not verify_password(credentials.password, user_row["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas: Correo electrónico o contraseña no válidos.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user_row["activo"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta de usuario está inactiva. Contacte al administrador.",
+        )
+
+    # Generar token JWT con claims requeridos
+    token_data = {
+        "sub": str(user_row["id"]),
+        "email": user_row["email"],
+        "nombre": user_row["nombre"],
+        "rol": user_row["rol"],
+    }
+    access_token = create_access_token(token_data)
+
+    user_response = UserResponse(
+        id=user_row["id"],
+        nombre=user_row["nombre"],
+        email=user_row["email"],
+        rol=user_row["rol"],
+    )
+
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
+        user=user_response
+    )
+
+@app.get("/api/auth/me", response_model=UserResponse, tags=["Autenticación"])
+def get_me(current_user: dict = Depends(get_current_user)):
+    """
+    Endpoint protegido: Obtiene la información del usuario actualmente autenticado
+    a partir del token JWT enviado en el encabezado Authorization.
+    """
+    return UserResponse(
+        id=current_user["id"],
+        nombre=current_user["nombre"],
+        email=current_user["email"],
+        rol=current_user["rol"],
+    )
+
+@app.get("/api/auth/verify", response_model=SessionStatusResponse, tags=["Autenticación"])
+def verify_session(current_user: dict = Depends(get_current_user)):
+    """
+    Endpoint protegido: Verifica la validez del token JWT almacenado.
+    Permite a la aplicación comprobar si la sesión aún es válida al iniciarse.
+    """
+    return SessionStatusResponse(
+        autenticado=True,
+        user=UserResponse(
+            id=current_user["id"],
+            nombre=current_user["nombre"],
+            email=current_user["email"],
+            rol=current_user["rol"],
+        ),
+        mensaje="Sesión activa y token JWT válido."
+    )
+
+# ============================================================================
+# Endpoints Protegidos del Inventario (CRUD y Dashboard)
+# Requieren encabezado 'Authorization: Bearer <token>' válido
+# ============================================================================
+
+@app.get("/api/dashboard", response_model=DashboardStats, tags=["Dashboard (Protegido)"])
+def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
+    """
+    Endpoint protegido: Retorna métricas consolidadas en tiempo real para las tarjetas del Dashboard.
+    Requiere autenticación con JWT.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -82,14 +210,16 @@ def get_dashboard_stats():
         valor_total_inventario=float(row["valor_total_inventario"])
     )
 
-@app.get("/api/productos", response_model=List[ProductoResponse], tags=["Productos"])
+@app.get("/api/productos", response_model=List[ProductoResponse], tags=["Productos (Protegido)"])
 def list_productos(
     q: Optional[str] = Query(None, description="Término de búsqueda por nombre o código"),
-    categoria: Optional[str] = Query(None, description="Filtrar por categoría")
+    categoria: Optional[str] = Query(None, description="Filtrar por categoría"),
+    current_user: dict = Depends(get_current_user)
 ):
     """
-    Endpoint 1 obligatorio: Listar todos los productos registrados.
+    Endpoint protegido: Listar todos los productos registrados.
     Permite opcionalmente filtrar por término de búsqueda (nombre/código) o categoría.
+    Requiere autenticación con JWT.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -114,11 +244,12 @@ def list_productos(
 
     return [dict(row) for row in rows]
 
-@app.get("/api/productos/{producto_id}", response_model=ProductoResponse, tags=["Productos"])
-def get_producto(producto_id: int):
+@app.get("/api/productos/{producto_id}", response_model=ProductoResponse, tags=["Productos (Protegido)"])
+def get_producto(producto_id: int, current_user: dict = Depends(get_current_user)):
     """
-    Endpoint 2 obligatorio: Consultar el detalle completo de un producto por su ID.
+    Endpoint protegido: Consultar el detalle completo de un producto por su ID.
     Retorna 404 si el producto no existe.
+    Requiere autenticación con JWT.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -137,14 +268,12 @@ def get_producto(producto_id: int):
 
     return dict(row)
 
-@app.post("/api/productos", response_model=ProductoResponse, status_code=status.HTTP_201_CREATED, tags=["Productos"])
-def create_producto(producto: ProductoCreate):
+@app.post("/api/productos", response_model=ProductoResponse, status_code=status.HTTP_201_CREATED, tags=["Productos (Protegido)"])
+def create_producto(producto: ProductoCreate, current_user: dict = Depends(get_current_user)):
     """
-    Endpoint 3 obligatorio: Registrar un nuevo producto en la base de datos.
-    Valida:
-    - Campos requeridos y formatos
-    - Código único (retorna 400 si ya está registrado)
-    - Precio > 0 y Cantidad >= 0
+    Endpoint protegido: Registrar un nuevo producto en la base de datos.
+    Valida campos, código único, precio y cantidad.
+    Requiere autenticación con JWT.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -191,14 +320,11 @@ def create_producto(producto: ProductoCreate):
             detail=f"Error inesperado al guardar el producto: {str(e)}"
         )
 
-@app.put("/api/productos/{producto_id}", response_model=ProductoResponse, tags=["Productos"])
-def update_producto(producto_id: int, producto: ProductoUpdate):
+@app.put("/api/productos/{producto_id}", response_model=ProductoResponse, tags=["Productos (Protegido)"])
+def update_producto(producto_id: int, producto: ProductoUpdate, current_user: dict = Depends(get_current_user)):
     """
-    Endpoint 4 obligatorio: Actualizar un producto existente.
-    Valida:
-    - Que el producto exista (404)
-    - Que el nuevo código no esté ocupado por otro producto (400)
-    - Valores coherentes de precio y cantidad
+    Endpoint protegido: Actualizar un producto existente.
+    Requiere autenticación con JWT.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -255,12 +381,11 @@ def update_producto(producto_id: int, producto: ProductoUpdate):
             detail=f"Error inesperado al actualizar el producto: {str(e)}"
         )
 
-@app.delete("/api/productos/{producto_id}", response_model=MensajeResponse, tags=["Productos"])
-def delete_producto(producto_id: int):
+@app.delete("/api/productos/{producto_id}", response_model=MensajeResponse, tags=["Productos (Protegido)"])
+def delete_producto(producto_id: int, current_user: dict = Depends(get_current_user)):
     """
-    Endpoint 5 obligatorio: Eliminar un producto por su ID.
-    Valida que el producto exista (404 si no existe).
-    Retorna mensaje confirmando la eliminación y los datos del producto eliminado.
+    Endpoint protegido: Eliminar un producto por su ID.
+    Requiere autenticación con JWT.
     """
     conn = get_db_connection()
     cursor = conn.cursor()

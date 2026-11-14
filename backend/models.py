@@ -1,6 +1,10 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 
+# ============================================================================
+# Modelos para Gestión de Productos
+# ============================================================================
+
 class ProductoBase(BaseModel):
     nombre: str = Field(..., min_length=2, max_length=150, description="Nombre del producto")
     codigo: str = Field(..., min_length=2, max_length=50, description="Código único del producto")
@@ -40,3 +44,31 @@ class DashboardStats(BaseModel):
 class MensajeResponse(BaseModel):
     mensaje: str
     producto: Optional[ProductoResponse] = None
+
+# ============================================================================
+# Modelos para Autenticación JWT y Usuarios
+# ============================================================================
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=120, description="Correo electrónico del usuario")
+    password: str = Field(..., min_length=4, max_length=100, description="Contraseña del usuario")
+
+class UserResponse(BaseModel):
+    id: int
+    nombre: str
+    email: str
+    rol: str
+
+    class Config:
+        from_attributes = True
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: UserResponse
+
+class SessionStatusResponse(BaseModel):
+    autenticado: bool
+    user: Optional[UserResponse] = None
+    mensaje: str
